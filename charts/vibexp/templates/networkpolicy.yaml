@@ -1,0 +1,24 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "vibexp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibexp.labels" (dict "ctx" . "component" "server") | nindent 4 }}
+  {{- include "vibexp.annotations" (dict "ctx" .) | nindent 2 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "vibexp.selectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: http
+          protocol: TCP
+      {{- with .Values.networkPolicy.ingressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

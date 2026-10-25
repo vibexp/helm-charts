@@ -1,0 +1,65 @@
+# chart-testing: every optional resource at once (external TEI via
+# ExternalName, NetworkPolicy, HTTPRoute off — kind has no Gateway API CRDs).
+baseUrl: https://vibexp.ci.example
+commonLabels:
+  team: platform
+commonAnnotations:
+  owner: ci
+postgresql:
+  enabled: true
+  auth:
+    password: ci-password
+secrets:
+  encryptionKey: 0123456789abcdef0123456789abcdef
+  sessionEncryptionKey: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  apiKeyCommon: ci-common-key
+embeddings:
+  externalName: tei.example.internal
+  nameOverride: embeddings
+networkPolicy:
+  enabled: true
+service:
+  annotations:
+    example.com/scrape: "false"
+podLabels:
+  sidecar.istio.io/inject: "false"
+extraEnv:
+  - name: LOG_LEVEL
+    value: debug
+extraObjects:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: '{{ include "vibexp.fullname" . }}-extra'
+    data:
+      release: '{{ .Release.Name }}'
+config:
+  trustedProxies:
+    - 10.244.0.0/16
+  file: |
+    # A full config.yaml (trimmed): proves config.file mode boots.
+    server:
+      port: "8080"
+      log_level: "${LOG_LEVEL:-info}"
+      log_format: json
+      trusted_proxies:
+        - 10.244.0.0/16
+    database:
+      host: "${DB_HOST}"
+      port: "${DB_PORT}"
+      user: "${DB_USER}"
+      password: "${DB_PASSWORD}"
+      name: "${DB_NAME}"
+      sslmode: disable
+    security:
+      encryption_key: "${ENCRYPTION_KEY}"
+      api_key_common: "${API_KEY_COMMON:-}"
+    auth:
+      session_encryption_key: "${SESSION_ENCRYPTION_KEY}"
+      instance_admins:
+        - admin@example.com
+    frontend:
+      base_url: {{ include "vibexp.baseUrl" . }}
+    storage:
+      backend: filesystem
+      fs_root_dir: {{ .Values.persistence.mountPath }}

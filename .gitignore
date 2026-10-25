@@ -1,0 +1,3 @@
+renders/
+.cr-release-packages/
+*.tgz

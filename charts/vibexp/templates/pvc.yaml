@@ -1,0 +1,19 @@
+{{- if and .Values.persistence.enabled (eq .Values.storage.backend "filesystem") (not .Values.persistence.existingClaim) (not .Values.persistence.hostPath) }}
+{{- $annotations := deepCopy .Values.persistence.annotations }}
+{{- if .Values.persistence.keep }}{{ $_ := set $annotations "helm.sh/resource-policy" "keep" }}{{ end }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vibexp.fullname" . }}-attachments
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibexp.labels" (dict "ctx" . "component" "server") | nindent 4 }}
+  {{- include "vibexp.annotations" (dict "ctx" . "annotations" $annotations) | nindent 2 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- include "vibexp.storageClass" .Values.persistence.storageClass | nindent 2 }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

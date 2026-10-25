@@ -1,0 +1,78 @@
+VibeXP {{ include "vibexp.appVersion" . }} is being deployed as "{{ include "vibexp.fullname" . }}" in namespace "{{ .Release.Namespace }}".
+The first start applies database migrations; follow it with:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "vibexp.fullname" . }}
+
+{{- $baseUrl := include "vibexp.baseUrl" . }}
+
+1. Open it
+{{- if include "vibexp.isLocalBaseUrl" . }}
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "vibexp.fullname" . }} 8080:{{ .Values.service.port }}
+  open http://localhost:8080
+
+  WARNING: the base URL is {{ $baseUrl }}, so this is an EVALUATION setup with
+  the dev login ON. Before anyone else can reach it, set `baseUrl` (or an
+  ingress host) to its public URL — that switches the dev login off — and
+  configure a sign-in provider under Admin → Settings → Authentication.
+{{- else }}
+
+  {{ $baseUrl }}
+
+  A new instance starts in setup mode. The setup URL is printed in the log:
+
+    kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "vibexp.fullname" . }} | grep -i setup
+{{- if not .Values.config.instanceAdmins }}
+
+  Consider setting `config.instanceAdmins` to the e-mail of the root administrator.
+{{- end }}
+{{- end }}
+{{- if and (or .Values.ingress.enabled .Values.httpRoute.enabled) (not .Values.config.trustedProxies) (not (include "vibexp.configFileEnabled" .)) }}
+
+  NOTE: `config.trustedProxies` is empty, so VibeXP ignores X-Forwarded-For and
+  sees every visitor as your ingress controller: audit logs and rate limits
+  then treat all of them as one client. Set it to the CIDR your ingress
+  controller connects from (its pod network).
+{{- end }}
+
+2. Semantic search
+{{- if include "vibexp.embeddings.active" . }}
+
+  In VibeXP, open a team's Settings → Embedding Providers and add a provider
+  with the URL:
+
+    http://{{ include "vibexp.embeddings.fullname" . }}:{{ .Values.embeddings.service.port }}
+
+{{- if .Values.embeddings.enabled }}
+  TEI downloads {{ .Values.embeddings.model }} on its first start; that can take a few minutes.
+{{- end }}
+{{- if and (not .Values.embeddings.service.clusterIP) (not .Values.config.outboundAllowedCidrs) (not (include "vibexp.configFileEnabled" .)) }}
+
+  ACTION NEEDED: VibeXP refuses to call private addresses unless they are
+  allowlisted, so embedding calls will fail with "connection to disallowed
+  address range blocked". Either pin `embeddings.service.clusterIP` to a free
+  address of your Service CIDR, or add the CIDR to `config.outboundAllowedCidrs`
+  (defaults: k3s 10.43.0.0/16, kubeadm 10.96.0.0/12, kind 10.96.0.0/16). Current Service IP:
+
+    kubectl -n {{ .Release.Namespace }} get svc {{ include "vibexp.embeddings.fullname" . }} -o jsonpath='{.spec.clusterIP}'
+{{- end }}
+{{- else }}
+
+  Not configured: search uses keyword matching. Set `embeddings.enabled=true`
+  to run text-embeddings-inference in the cluster.
+{{- end }}
+{{- if and .Values.postgresql.enabled }}
+
+3. Database
+
+  The bundled PostgreSQL is a single pod without backups. Use
+  `externalDatabase` for data you cannot lose.
+{{- end }}
+{{- if and (not .Values.secrets.existingSecret) (not .Values.secrets.encryptionKey) }}
+
+IMPORTANT: the encryption key was generated and stored in Secret
+"{{ include "vibexp.fullname" . }}". Back it up: without it, the credentials
+VibeXP stores (sign-in providers, mail, integrations) cannot be decrypted.
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "vibexp.fullname" . }} -o jsonpath='{.data.ENCRYPTION_KEY}' | base64 -d
+{{- end }}

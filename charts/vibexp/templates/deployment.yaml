@@ -1,0 +1,236 @@
+{{- include "vibexp.validate" . }}
+{{- $fullname := include "vibexp.fullname" . }}
+{{- $db := include "vibexp.database" . | fromYaml }}
+{{- $baseUrl := include "vibexp.baseUrl" . }}
+{{- /*
+Environment the chart derives from values. Every one of them feeds a ${VAR}
+reference of the image's built-in config; with config.file they matter only
+where that file references them. A name also set in extraEnv is skipped, so
+extraEnv always wins.
+*/}}
+{{- $env := dict
+  "PORT" "8080"
+  "LOG_LEVEL" .Values.config.logLevel
+  "LOG_FORMAT" .Values.config.logFormat
+  "FRONTEND_BASE_URL" $baseUrl
+  "OAUTH_AS_ISSUER_URL" $baseUrl
+  "MCP_OAUTH_ISSUER" $baseUrl
+  "MCP_RESOURCE_URI" (printf "%s/mcp/v1/common" $baseUrl)
+  "VITE_MCP_ENDPOINT" (printf "%s/mcp/v1/common" $baseUrl)
+  "DB_HOST" $db.host
+  "DB_PORT" $db.port
+  "DB_SSLMODE" $db.sslmode
+  "STORAGE_BACKEND" .Values.storage.backend
+}}
+{{- with $db.name }}{{ $_ := set $env "DB_NAME" . }}{{ end }}
+{{- with $db.user }}{{ $_ := set $env "DB_USER" . }}{{ end }}
+{{- with .Values.config.trustedProxies }}{{ $_ := set $env "TRUSTED_PROXIES" (join "," .) }}{{ end }}
+{{- with include "vibexp.outboundAllowedCidrs" . }}{{ $_ := set $env "OUTBOUND_ALLOWED_CIDRS" . }}{{ end }}
+{{- with .Values.config.instanceAdmins }}{{ $_ := set $env "INSTANCE_ADMIN_EMAILS" (join "," .) }}{{ end }}
+{{- if eq .Values.storage.backend "filesystem" }}{{ $_ := set $env "STORAGE_FS_ROOT_DIR" .Values.persistence.mountPath }}{{ end }}
+{{- if has .Values.storage.backend (list "s3" "gcs") }}{{ $_ := set $env "GCS_RESOURCE_ATTACHMENTS_BUCKET" .Values.storage.bucket }}{{ end }}
+{{- if eq .Values.storage.backend "s3" }}
+{{- $_ := set $env "S3_ENDPOINT" .Values.storage.s3.endpoint }}
+{{- $_ := set $env "S3_REGION" .Values.storage.s3.region }}
+{{- $_ := set $env "S3_PATH_STYLE" (toString .Values.storage.s3.pathStyle) }}
+{{- end }}
+{{- if include "vibexp.configFileEnabled" . }}{{ $_ := set $env "VIBEXP_CONFIG_FILE" "/etc/vibexp/config.yaml" }}{{ end }}
+{{- $override := list }}
+{{- range .Values.extraEnv }}{{ $override = append $override .name }}{{ end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibexp.labels" (dict "ctx" . "component" "server") | nindent 4 }}
+  {{- include "vibexp.annotations" (dict "ctx" .) | nindent 2 }}
+spec:
+  # Exactly one: see updateStrategy in values.yaml.
+  replicas: 1
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "vibexp.selectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vibexp.labels" (dict "ctx" . "component" "server") | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # The app reads its config and secrets once, at boot: roll the pod when
+        # either changes. The config is hashed after parsing, so editing a
+        # comment does not restart it.
+        {{- with .Values.config.file }}
+        checksum/config: {{ tpl . $ | fromYaml | toJson | sha256sum }}
+        {{- end }}
+        {{- if not .Values.secrets.existingSecret }}
+        checksum/secret: {{ toJson (list .Values.secrets .Values.externalDatabase.password) | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "vibexp.imagePullSecrets" (dict "ctx" . "secrets" .Values.imagePullSecrets) | nindent 6 }}
+      serviceAccountName: {{ include "vibexp.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      # Services of this namespace would otherwise inject *_PORT/*_HOST
+      # variables, which can collide with the app's own (DB_PORT, PORT).
+      enableServiceLinks: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if or .Values.waitForDatabase.enabled .Values.initContainers }}
+      initContainers:
+        {{- if .Values.waitForDatabase.enabled }}
+        - name: wait-for-database
+          image: {{ include "vibexp.image" (dict "image" .Values.waitForDatabase.image "global" .Values.global "defaultTag" "") }}
+          imagePullPolicy: {{ .Values.waitForDatabase.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              end=$(( $(date +%s) + {{ .Values.waitForDatabase.timeoutSeconds | int }} ))
+              until nc -z -w 2 "$DB_HOST" "$DB_PORT"; do
+                [ "$(date +%s)" -ge "$end" ] && echo "database $DB_HOST:$DB_PORT not reachable" && exit 1
+                echo "waiting for database $DB_HOST:$DB_PORT"; sleep 2
+              done
+          env:
+            - name: DB_HOST
+              value: {{ $db.host | quote }}
+            - name: DB_PORT
+              value: {{ $db.port | quote }}
+          resources:
+            limits:
+              memory: 32Mi
+        {{- end }}
+        {{- with .Values.initContainers }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: vibexp
+          image: {{ include "vibexp.image" (dict "image" .Values.image "global" .Values.global "defaultTag" .Chart.AppVersion) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            {{- range $name := keys $env | sortAlpha }}
+            {{- if not (has $name $override) }}
+            - name: {{ $name }}
+              value: {{ index $env $name | toString | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if and $db.passwordSecret (not (has "DB_PASSWORD" $override)) }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $db.passwordSecret }}
+                  key: {{ $db.passwordKey }}
+            {{- end }}
+            {{- if and (eq .Values.storage.backend "s3") .Values.storage.s3.existingSecret }}
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.s3.existingSecret }}
+                  key: {{ .Values.storage.s3.accessKeyKey }}
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.s3.existingSecret }}
+                  key: {{ .Values.storage.s3.secretKeyKey }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- tpl (toYaml .) $ | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "vibexp.secretName" . }}
+            {{- with .Values.extraEnvFrom }}
+            {{- tpl (toYaml .) $ | nindent 12 }}
+            {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if include "vibexp.configFileEnabled" . }}
+            - name: config
+              mountPath: /etc/vibexp
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.persistence.enabled (eq .Values.storage.backend "filesystem") }}
+            - name: attachments
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- tpl (toYaml .) $ | nindent 12 }}
+            {{- end }}
+        {{- with .Values.sidecars }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if include "vibexp.configFileEnabled" . }}
+        - name: config
+          configMap:
+            name: {{ include "vibexp.configMapName" . }}
+        {{- end }}
+        {{- if and .Values.persistence.enabled (eq .Values.storage.backend "filesystem") }}
+        - name: attachments
+          {{- if .Values.persistence.hostPath }}
+          # On the node, outside the cluster's storage: never deleted with the
+          # release. Must exist and be writable by uid 100 / gid 101.
+          hostPath:
+            path: {{ .Values.persistence.hostPath }}
+            type: Directory
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-attachments" $fullname) .Values.persistence.existingClaim }}
+          {{- end }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
