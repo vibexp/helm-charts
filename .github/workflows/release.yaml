@@ -35,8 +35,12 @@ jobs:
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      # Helm and cosign keep separate credentials: helm's registry config for the
+      # push, the Docker-style config cosign reads for the signature.
       - name: Log in to ghcr.io
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Package, push, sign, release
         env:
@@ -55,9 +59,17 @@ jobs:
               continue
             fi
             echo "::group::Releasing $tag"
-            helm package "$chart" -d .cr-release-packages
             pkg=".cr-release-packages/$name-$version.tgz"
-            out=$(helm push "$pkg" "oci://$REGISTRY" 2>&1); echo "$out"
+            # Re-run after a partial failure: a version already in the registry is
+            # never pushed again (that would swap its digest under anyone who
+            # pulled it); its existing package is signed and released instead.
+            if out=$(helm pull "oci://$REGISTRY/$name" --version "$version" -d .cr-release-packages 2>&1); then
+              echo "$name $version is already in the registry; not pushing it again"
+            else
+              helm package "$chart" -d .cr-release-packages
+              out=$(helm push "$pkg" "oci://$REGISTRY" 2>&1)
+            fi
+            echo "$out"
             digest=$(echo "$out" | awk '/^Digest:/ {print $2}')
             [ -n "$digest" ] || { echo "::error::no digest in helm push output"; exit 1; }
             cosign sign "$REGISTRY/$name@$digest"
