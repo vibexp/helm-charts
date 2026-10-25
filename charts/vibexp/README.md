@@ -1,6 +1,6 @@
 # VibeXP Helm chart
 
-![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.18.0](https://img.shields.io/badge/AppVersion-0.18.0-informational?style=flat-square)
+![Version: 0.1.1](https://img.shields.io/badge/Version-0.1.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.18.0](https://img.shields.io/badge/AppVersion-0.18.0-informational?style=flat-square)
 
 VibeXP — the shared brain of your organization for AI. Deploys the VibeXP server (API + web app in one container) with optional in-cluster text embeddings (Hugging Face TEI) and an optional bundled PostgreSQL + pgvector.
 
@@ -26,7 +26,9 @@ helm install vibexp oci://ghcr.io/vibexp/charts/vibexp \
 ```
 
 That is an **evaluation** install: no public URL, so the base URL is
-`http://localhost:8080` and the dev login is on. Reach it with:
+`http://localhost:8080` — VibeXP's local mode, where the dev login is on and the
+SSRF guard is off (so `config.outboundAllowedCidrs` has no effect). Never expose
+it. Reach it with:
 
 ```sh
 kubectl -n vibexp port-forward svc/vibexp 8080:80
@@ -124,7 +126,8 @@ Embedding Providers); the chart only runs the server. Use
 and a model that produces **1024-dimensional** vectors — the default
 `mixedbread-ai/mxbai-embed-large-v1` does.
 
-VibeXP refuses outbound calls to private addresses unless they are allowlisted,
+Outside local mode (a non-localhost base URL), VibeXP refuses outbound calls to
+private addresses unless they are allowlisted,
 and it checks the IP it dials — the TEI Service's ClusterIP. Either pin
 `embeddings.service.clusterIP` (the chart then allowlists it), or add your
 Service CIDR to `config.outboundAllowedCidrs`. Otherwise embedding fails with
@@ -151,7 +154,7 @@ Kubernetes: `>=1.25.0-0`
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | affinity | object | `{}` | Affinity. |
-| baseUrl | string | `""` | The public URL of this instance — the single origin that serves the web app and the API (e.g. `https://vibexp.example.com`). Used for OAuth callbacks, the MCP endpoint and links in mail. When empty it is derived from the first ingress/HTTPRoute host, and failing that it is `http://localhost:8080`: an evaluation setup where the DEV LOGIN IS ON. Never expose an instance whose base URL points at localhost. |
+| baseUrl | string | `""` | The public URL of this instance — the single origin that serves the web app and the API (e.g. `https://vibexp.example.com`). Used for OAuth callbacks, the MCP endpoint and links in mail. When empty it is derived from the first ingress/HTTPRoute host, and failing that it is `http://localhost:8080`: an evaluation setup where the DEV LOGIN IS ON and the SSRF guard is OFF (private destinations are all reachable). Never expose an instance whose base URL points at localhost. |
 | commonAnnotations | object | `{}` | Annotations added to every resource the chart renders. |
 | commonLabels | object | `{}` | Labels added to every resource the chart renders. |
 | config.existingConfigMap | string | `""` | Use an existing ConfigMap (key `config.yaml`) instead of `config.file`. |

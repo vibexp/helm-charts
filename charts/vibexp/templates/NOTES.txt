@@ -11,10 +11,12 @@ The first start applies database migrations; follow it with:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "vibexp.fullname" . }} 8080:{{ .Values.service.port }}
   open http://localhost:8080
 
-  WARNING: the base URL is {{ $baseUrl }}, so this is an EVALUATION setup with
-  the dev login ON. Before anyone else can reach it, set `baseUrl` (or an
-  ingress host) to its public URL — that switches the dev login off — and
-  configure a sign-in provider under Admin → Settings → Authentication.
+  WARNING: the base URL is {{ $baseUrl }}, so this is an EVALUATION setup:
+  the dev login is ON and the SSRF guard is OFF (VibeXP may call any private
+  address, whatever `config.outboundAllowedCidrs` says). Before anyone else can
+  reach it, set `baseUrl` (or an ingress host) to its public URL — that turns
+  both protections back on — and configure a sign-in provider under
+  Admin → Settings → Authentication.
 {{- else }}
 
   {{ $baseUrl }}

@@ -31,8 +31,9 @@ commonAnnotations: {}
 # app and the API (e.g. `https://vibexp.example.com`). Used for OAuth
 # callbacks, the MCP endpoint and links in mail. When empty it is derived from
 # the first ingress/HTTPRoute host, and failing that it is
-# `http://localhost:8080`: an evaluation setup where the DEV LOGIN IS ON.
-# Never expose an instance whose base URL points at localhost.
+# `http://localhost:8080`: an evaluation setup where the DEV LOGIN IS ON and
+# the SSRF guard is OFF (private destinations are all reachable). Never expose
+# an instance whose base URL points at localhost.
 baseUrl: ""
 
 image:

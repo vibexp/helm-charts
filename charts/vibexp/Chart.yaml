@@ -7,7 +7,7 @@ description: >-
 type: application
 # The chart's own version. Bump it on every change to the chart (SemVer);
 # merging a new version to main publishes it.
-version: 0.1.0
+version: 0.1.1
 # The VibeXP release the chart deploys by default (image tag).
 appVersion: "0.18.0"
 kubeVersion: ">=1.25.0-0"

@@ -15,7 +15,8 @@ helm install vibexp oci://ghcr.io/vibexp/charts/vibexp \
   --set postgresql.enabled=true
 ```
 
-Verify a chart's signature:
+Verify a chart's signature (cosign **v3 or newer** — v2 cannot read the
+signature bundle format and reports "no signatures found"):
 
 ```sh
 cosign verify ghcr.io/vibexp/charts/vibexp:<version> \
