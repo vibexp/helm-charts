@@ -1,0 +1,26 @@
+# chart-testing: in-cluster TEI. A small model keeps CI fast; it is 384-dim,
+# so it is NOT usable by VibeXP (which needs 1024) — this only proves TEI
+# starts under the chart's security context.
+postgresql:
+  enabled: true
+embeddings:
+  enabled: true
+  model: BAAI/bge-small-en-v1.5
+  service:
+    clusterIP: 10.96.200.10
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+ingress:
+  enabled: true
+  hosts:
+    - host: vibexp.ci.local
+      paths:
+        - path: /
+          pathType: Prefix
+config:
+  trustedProxies:
+    - 10.244.0.0/16

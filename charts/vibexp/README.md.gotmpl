@@ -1,0 +1,147 @@
+# VibeXP Helm chart
+
+{{ template "chart.badgesSection" . }}
+
+{{ template "chart.description" . }}
+
+[VibeXP](https://vibexp.io) serves its web app and API from one container. This
+chart runs it on Kubernetes together with the pieces it needs, each optional:
+
+| Component | Default | What it is |
+|---|---|---|
+| VibeXP server | always | One pod (see [Scaling](#scaling)) |
+| PostgreSQL + pgvector | off (`postgresql.enabled`) | A single-pod database for evaluation and small installs, or bring your own (`externalDatabase`) |
+| Text embeddings (TEI) | off (`embeddings.enabled`) | [Hugging Face text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference) for semantic search, or point at one you run elsewhere (`embeddings.externalName`) |
+| Attachments volume | on (`persistence`) | A PVC (or `hostPath`) for uploads; or use S3/GCS (`storage.backend`) |
+| Ingress / HTTPRoute | off | Standard `networking.k8s.io/v1` Ingress, or a Gateway API HTTPRoute |
+
+## Install
+
+The chart is published as an OCI artifact:
+
+```sh
+helm install vibexp oci://ghcr.io/vibexp/charts/vibexp \
+  --namespace vibexp --create-namespace \
+  --set postgresql.enabled=true
+```
+
+That is an **evaluation** install: no public URL, so the base URL is
+`http://localhost:8080` and the dev login is on. Reach it with:
+
+```sh
+kubectl -n vibexp port-forward svc/vibexp 8080:80
+```
+
+### A production install
+
+```yaml
+# values.yaml
+baseUrl: https://vibexp.example.com
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+  hosts:
+    - host: vibexp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: vibexp-tls
+      hosts: [vibexp.example.com]
+
+config:
+  # The network your ingress controller connects from, so VibeXP sees real
+  # client IPs (rate limits and audit logs depend on it).
+  trustedProxies: [10.42.0.0/16]
+  instanceAdmins: [you@example.com]
+
+# Keys you manage (and back up) yourself.
+secrets:
+  existingSecret: vibexp-secrets   # ENCRYPTION_KEY, SESSION_ENCRYPTION_KEY
+
+externalDatabase:
+  host: postgres.example.internal
+  database: vibexp
+  username: vibexp
+  existingSecret: vibexp-db        # key DB_PASSWORD
+  sslmode: require
+
+embeddings:
+  enabled: true
+  service:
+    # A free address in your Service CIDR. The chart allowlists it for the
+    # app's SSRF guard, which otherwise refuses to call private addresses.
+    clusterIP: 10.43.200.10
+```
+
+```sh
+kubectl -n vibexp create secret generic vibexp-secrets \
+  --from-literal=ENCRYPTION_KEY="$(openssl rand -base64 24)" \
+  --from-literal=SESSION_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+helm install vibexp oci://ghcr.io/vibexp/charts/vibexp -n vibexp -f values.yaml
+```
+
+A new instance starts in **setup mode** and logs a one-time setup URL
+(`kubectl -n vibexp logs deploy/vibexp | grep -i setup`). Sign-in providers,
+the access allowlist, mail and site branding are configured there and in
+Admin → Settings — they are stored in the database, not in the chart.
+
+## Configuration model
+
+By default the image's built-in configuration is used and the chart feeds it
+environment variables (`baseUrl`, `config.*`, the database, storage). Anything
+else can be set with `extraEnv` — see the image's
+[`config.docker.yaml`](https://github.com/vibexp/vibexp/blob/main/backend/config.docker.yaml)
+for every variable it reads.
+
+For full control, set `config.file` to a complete `config.yaml` (start from
+[`config.example.yaml`](https://github.com/vibexp/vibexp/blob/main/backend/config.example.yaml)).
+It replaces the built-in file; `${VAR}` references inside it are resolved from
+the environment, so keep secrets in the Secret and reference them. The pod
+restarts when the file's content changes.
+
+## Secrets
+
+Without `secrets.existingSecret` the chart creates a Secret and generates
+`ENCRYPTION_KEY` and `SESSION_ENCRYPTION_KEY` on first install, re-using them on
+upgrades. The encryption key protects the credentials VibeXP stores in its
+database — **back it up**; losing it makes them unreadable. The Secret is kept
+when the release is uninstalled.
+
+Generated values rely on Helm's `lookup`, which renders nothing in
+`helm template` and in GitOps tools that render offline (Argo CD). There, set
+the keys explicitly or use `existingSecret`, or each render produces new ones.
+
+## Semantic search and the SSRF guard
+
+The embedding provider is configured **per team in the app** (Settings →
+Embedding Providers); the chart only runs the server. Use
+`http://<fullname>-embeddings:80` as its URL (`vibexp-embeddings` for a release named `vibexp`; the install notes print it),
+and a model that produces **1024-dimensional** vectors — the default
+`mixedbread-ai/mxbai-embed-large-v1` does.
+
+VibeXP refuses outbound calls to private addresses unless they are allowlisted,
+and it checks the IP it dials — the TEI Service's ClusterIP. Either pin
+`embeddings.service.clusterIP` (the chart then allowlists it), or add your
+Service CIDR to `config.outboundAllowedCidrs`. Otherwise embedding fails with
+`connection to disallowed address range blocked`.
+
+## Scaling
+
+VibeXP runs exactly **one replica** with the `Recreate` strategy: it migrates
+its database at boot, and two versions must never run against it at once. An
+upgrade therefore has a short downtime. Migrations are not reversible — take a
+database backup before upgrading, and roll back by restoring it.
+
+## Upgrading
+
+Chart versions follow SemVer; breaking changes bump the major version (minor
+before 1.0) and are described in the release notes.
+
+{{ template "chart.requirementsSection" . }}
+
+{{ template "chart.valuesSection" . }}

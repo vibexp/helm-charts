@@ -1,0 +1,42 @@
+apiVersion: v2
+name: vibexp
+description: >-
+  VibeXP — the shared brain of your organization for AI. Deploys the VibeXP
+  server (API + web app in one container) with optional in-cluster text
+  embeddings (Hugging Face TEI) and an optional bundled PostgreSQL + pgvector.
+type: application
+# The chart's own version. Bump it on every change to the chart (SemVer);
+# merging a new version to main publishes it.
+version: 0.1.0
+# The VibeXP release the chart deploys by default (image tag).
+appVersion: "0.18.0"
+kubeVersion: ">=1.25.0-0"
+home: https://vibexp.io
+icon: https://avatars.githubusercontent.com/u/295569430?v=4
+sources:
+  - https://github.com/vibexp/helm-charts
+  - https://github.com/vibexp/vibexp
+keywords:
+  - vibexp
+  - ai
+  - knowledge-base
+  - context-engineering
+  - mcp
+maintainers:
+  - name: VibeXP
+    url: https://github.com/vibexp
+annotations:
+  artifacthub.io/license: MIT
+  artifacthub.io/category: ai-machine-learning
+  artifacthub.io/links: |
+    - name: VibeXP
+      url: https://vibexp.io
+    - name: Source
+      url: https://github.com/vibexp/vibexp
+  artifacthub.io/images: |
+    - name: vibexp
+      image: ghcr.io/vibexp/vibexp:0.18.0
+    - name: text-embeddings-inference
+      image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    - name: pgvector
+      image: docker.io/pgvector/pgvector:0.8.1-pg17

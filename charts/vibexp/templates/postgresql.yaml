@@ -1,0 +1,156 @@
+{{- if .Values.postgresql.enabled }}
+{{- $name := include "vibexp.postgresql.fullname" . }}
+{{- $pg := .Values.postgresql }}
+{{- if not $pg.auth.existingSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibexp.labels" (dict "ctx" . "component" "postgresql") | nindent 4 }}
+  # Kept on uninstall like the data volume, so a reinstall can still log in.
+  {{- include "vibexp.annotations" (dict "ctx" . "annotations" (dict "helm.sh/resource-policy" "keep")) | nindent 2 }}
+type: Opaque
+data:
+  {{ $pg.auth.secretKey }}: {{ include "vibexp.secretValue" (dict "ctx" . "secret" $name "key" $pg.auth.secretKey "value" $pg.auth.password "generate" (randAlphaNum 32)) | b64enc | quote }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibexp.labels" (dict "ctx" . "component" "postgresql") | nindent 4 }}
+  {{- include "vibexp.annotations" (dict "ctx" .) | nindent 2 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "vibexp.selectorLabels" (dict "ctx" . "component" "postgresql") | nindent 4 }}
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibexp.labels" (dict "ctx" . "component" "postgresql") | nindent 4 }}
+  {{- include "vibexp.annotations" (dict "ctx" .) | nindent 2 }}
+spec:
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      {{- include "vibexp.selectorLabels" (dict "ctx" . "component" "postgresql") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vibexp.labels" (dict "ctx" . "component" "postgresql") | nindent 8 }}
+        {{- with $pg.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $pg.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "vibexp.imagePullSecrets" (dict "ctx" . "secrets" .Values.imagePullSecrets) | nindent 6 }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        {{- toYaml $pg.podSecurityContext | nindent 8 }}
+      containers:
+        - name: postgresql
+          image: {{ include "vibexp.image" (dict "image" $pg.image "global" .Values.global "defaultTag" "") }}
+          imagePullPolicy: {{ $pg.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $pg.securityContext | nindent 12 }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ $pg.auth.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ $pg.auth.username | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vibexp.postgresql.secretName" . }}
+                  key: {{ $pg.auth.secretKey }}
+            # A subdirectory: the volume's root may hold lost+found, which
+            # initdb refuses.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgresql
+              containerPort: 5432
+              protocol: TCP
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml $pg.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+      volumes:
+        - name: run
+          emptyDir: {}
+        {{- if not $pg.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- else if $pg.persistence.existingClaim }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ $pg.persistence.existingClaim }}
+        {{- end }}
+      {{- with $pg.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $pg.affinity }}
+      affinity:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
+      {{- with $pg.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if and $pg.persistence.enabled (not $pg.persistence.existingClaim) }}
+  # StatefulSet claims are never deleted by `helm uninstall`.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "vibexp.selectorLabels" (dict "ctx" . "component" "postgresql") | nindent 10 }}
+        {{- with $pg.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml $pg.persistence.accessModes | nindent 10 }}
+        {{- include "vibexp.storageClass" $pg.persistence.storageClass | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ $pg.persistence.size }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,6 @@
+# chart-testing: the quickstart — bundled PostgreSQL, attachments on a PVC.
+postgresql:
+  enabled: true
+config:
+  instanceAdmins:
+    - admin@example.com

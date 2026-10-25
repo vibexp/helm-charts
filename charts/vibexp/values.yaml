@@ -1,0 +1,560 @@
+# Default values for the VibeXP chart.
+#
+# The smallest install that works (bundled PostgreSQL, keyword search, reach it
+# with `kubectl port-forward`):
+#
+#   helm install vibexp oci://ghcr.io/vibexp/charts/vibexp \
+#     --set postgresql.enabled=true
+#
+# For anything reachable by other people, set `baseUrl` (or an ingress host) —
+# it is what switches the evaluation-only dev login OFF. See README.md.
+
+global:
+  # -- Registry prepended to every image of the chart (overrides each
+  # `image.registry`). For mirrors and air-gapped clusters.
+  imageRegistry: ""
+  # -- Pull secrets added to every pod of the chart.
+  imagePullSecrets: []
+
+# -- Override the chart name in resource names.
+nameOverride: ""
+# -- Override the full resource name prefix (default `<release>-vibexp`, or
+# `<release>` when the release name already contains `vibexp`).
+fullnameOverride: ""
+
+# -- Labels added to every resource the chart renders.
+commonLabels: {}
+# -- Annotations added to every resource the chart renders.
+commonAnnotations: {}
+
+# -- The public URL of this instance — the single origin that serves the web
+# app and the API (e.g. `https://vibexp.example.com`). Used for OAuth
+# callbacks, the MCP endpoint and links in mail. When empty it is derived from
+# the first ingress/HTTPRoute host, and failing that it is
+# `http://localhost:8080`: an evaluation setup where the DEV LOGIN IS ON.
+# Never expose an instance whose base URL points at localhost.
+baseUrl: ""
+
+image:
+  # -- Image registry.
+  registry: ghcr.io
+  # -- Image repository.
+  repository: vibexp/vibexp
+  # -- Image tag. Defaults to the chart's `appVersion`.
+  tag: ""
+  # -- Image digest (`sha256:...`). When set it is used instead of the tag.
+  digest: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Pull secrets for the VibeXP pod (in addition to `global.imagePullSecrets`).
+imagePullSecrets: []
+
+# -- Deployment strategy. VibeXP runs ONE replica: it applies database
+# migrations at boot and two versions must never share a database, so the
+# old pod is stopped before the new one starts. Changing this to
+# RollingUpdate is not supported.
+updateStrategy:
+  type: Recreate
+
+# -- Number of old ReplicaSets to keep for rollback.
+revisionHistoryLimit: 3
+
+# Application settings. By default the image's built-in config file is used,
+# and the values below reach it as environment variables — no config file to
+# author. For full control set `config.file` (or `config.existingConfigMap`):
+# the file then REPLACES the built-in one, and only the `${VAR}` references
+# inside it read the environment.
+config:
+  # -- Log level: debug, info, warn, error.
+  logLevel: info
+  # -- Log format: json or text.
+  logFormat: json
+  # -- CIDRs of the proxies allowed to set X-Forwarded-For (your ingress
+  # controller's pod or node range, e.g. `10.42.0.0/16` on k3s). Empty means
+  # the header is ignored and every client is rate-limited as the proxy's
+  # address — set this whenever VibeXP sits behind an ingress.
+  trustedProxies: []
+  # -- Private CIDRs VibeXP may call out to. The SSRF guard refuses every
+  # loopback/private destination by default — including an in-cluster
+  # embeddings or LLM service. The embeddings Service IP is added automatically
+  # when `embeddings.service.clusterIP` is set. Link-local and multicast can
+  # never be allowlisted; overlapping entries abort startup.
+  outboundAllowedCidrs: []
+  # -- Root instance administrators (emails). They cannot be revoked in the UI,
+  # and the first sign-in by one of them ends the setup mode of a new instance.
+  instanceAdmins: []
+  # -- A complete VibeXP `config.yaml`, rendered with `tpl` (so it may use
+  # `{{ .Values.* }}`). Replaces the image's built-in config. Start from
+  # https://github.com/vibexp/vibexp/blob/main/backend/config.example.yaml.
+  # `${VAR}` placeholders are resolved by the app from the environment, so
+  # keep secrets in a Secret and reference them.
+  file: ""
+  # -- Use an existing ConfigMap (key `config.yaml`) instead of `config.file`.
+  existingConfigMap: ""
+
+# Instance secrets. With `existingSecret` the chart creates none and the whole
+# Secret is loaded as environment variables (envFrom), so it may also carry any
+# other variable the config references (DB_PASSWORD, S3 keys, ...).
+secrets:
+  # -- Name of an existing Secret holding at least `ENCRYPTION_KEY` and
+  # `SESSION_ENCRYPTION_KEY`.
+  existingSecret: ""
+  # -- AES-256 key, EXACTLY 32 bytes. Encrypts credentials stored in the
+  # database: changing or losing it makes them unreadable. Generated when empty.
+  encryptionKey: ""
+  # -- Session encryption key, 64 hex characters. Generated when empty.
+  sessionEncryptionKey: ""
+  # -- Optional shared API key (`API_KEY_COMMON`).
+  apiKeyCommon: ""
+  # -- Optional back-office admin API key (`BACKOFFICE_ADMIN_API_KEY`).
+  backofficeAdminApiKey: ""
+  # -- Keep the generated Secret when the release is uninstalled
+  # (`helm.sh/resource-policy: keep`), so a reinstall can still read the data.
+  keep: true
+
+# Where uploaded attachments are stored. `filesystem` writes to the volume
+# below; `s3` and `gcs` use object storage.
+storage:
+  # -- `filesystem`, `s3`, `gcs`, or empty (attachments disabled).
+  backend: filesystem
+  # -- Bucket for the `s3` and `gcs` backends.
+  bucket: ""
+  s3:
+    # -- S3 endpoint (empty for AWS).
+    endpoint: ""
+    # -- S3 region.
+    region: ""
+    # -- Path-style addressing (MinIO and most self-hosted stores).
+    pathStyle: false
+    # -- Secret with the S3 credentials.
+    existingSecret: ""
+    # -- Key of the access key in `existingSecret`.
+    accessKeyKey: S3_ACCESS_KEY
+    # -- Key of the secret key in `existingSecret`.
+    secretKeyKey: S3_SECRET_KEY
+
+# Volume for the `filesystem` storage backend.
+persistence:
+  # -- Mount a volume for attachments (used when `storage.backend` is
+  # `filesystem`).
+  enabled: true
+  # -- Use an existing PVC.
+  existingClaim: ""
+  # -- Use a directory on the node instead of a PVC (single-node clusters).
+  # It must exist and be writable by uid 100 / gid 101.
+  hostPath: ""
+  # -- Storage class (`-` for none, empty for the cluster default).
+  storageClass: ""
+  # -- Access modes.
+  accessModes:
+    - ReadWriteOnce
+  # -- Size.
+  size: 10Gi
+  # -- Extra annotations on the PVC.
+  annotations: {}
+  # -- Keep the PVC when the release is uninstalled.
+  keep: true
+  # -- Where the volume is mounted in the container.
+  mountPath: /var/lib/vibexp/attachments
+
+serviceAccount:
+  # -- Create a ServiceAccount.
+  create: true
+  # -- Its name (generated from the fullname when empty).
+  name: ""
+  # -- Annotations (e.g. for workload identity).
+  annotations: {}
+  # -- Mount the API token. VibeXP never calls the Kubernetes API.
+  automountServiceAccountToken: false
+
+# -- Pod-level security context. The image's `vibexp` user is uid 100 / gid 101.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 100
+  runAsGroup: 101
+  fsGroup: 101
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container-level security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Labels added to the VibeXP pod.
+podLabels: {}
+# -- Annotations added to the VibeXP pod.
+podAnnotations: {}
+
+# -- Resource requests and limits for the VibeXP container.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 2Gi
+
+# -- Startup probe. Generous, because migrations run before the server
+# listens.
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 5
+  failureThreshold: 60
+# -- Liveness probe.
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 4
+# -- Readiness probe.
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# -- Extra environment variables (list of EnvVar). They take precedence over
+# the variables the chart sets.
+extraEnv: []
+# -- Extra `envFrom` sources (Secrets/ConfigMaps).
+extraEnvFrom: []
+# -- Extra volumes for the VibeXP pod.
+extraVolumes: []
+# -- Extra volume mounts for the VibeXP container.
+extraVolumeMounts: []
+# VibeXP exits at boot when the database does not answer. This init container
+# waits for the database port first, so a fresh install (whose PostgreSQL is
+# still initialising) does not crash-loop.
+waitForDatabase:
+  # -- Wait for the database port before starting VibeXP.
+  enabled: true
+  # -- Give up (and let the pod restart) after this many seconds.
+  timeoutSeconds: 300
+  image:
+    registry: docker.io
+    repository: busybox
+    tag: "1.37"
+    digest: ""
+    pullPolicy: IfNotPresent
+
+# -- Init containers (rendered with `tpl`).
+initContainers: []
+# -- Additional containers in the VibeXP pod (rendered with `tpl`).
+sidecars: []
+
+# -- Node selector.
+nodeSelector: {}
+# -- Tolerations.
+tolerations: []
+# -- Affinity.
+affinity: {}
+# -- Topology spread constraints.
+topologySpreadConstraints: []
+# -- Priority class.
+priorityClassName: ""
+# -- Seconds to wait for a graceful shutdown.
+terminationGracePeriodSeconds: 30
+
+service:
+  # -- Service type.
+  type: ClusterIP
+  # -- Service port.
+  port: 80
+  # -- Fixed ClusterIP (empty to let Kubernetes choose).
+  clusterIP: ""
+  # -- Node port when `type` is NodePort/LoadBalancer.
+  nodePort: ""
+  # -- Service annotations.
+  annotations: {}
+  # -- Extra Service labels.
+  labels: {}
+
+ingress:
+  # -- Create an Ingress.
+  enabled: false
+  # -- Ingress class.
+  className: ""
+  # -- Ingress annotations (e.g. cert-manager, proxy body size — uploads can be
+  # 10 MiB).
+  annotations: {}
+  # -- Hosts. The first host also derives `baseUrl` when that is empty.
+  hosts:
+    - host: vibexp.local
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS (`[{secretName, hosts}]`).
+  tls: []
+
+# Gateway API alternative to the Ingress.
+httpRoute:
+  # -- Create an HTTPRoute (needs the Gateway API CRDs).
+  enabled: false
+  # -- Annotations.
+  annotations: {}
+  # -- Gateways to attach to.
+  parentRefs: []
+  #  - name: shared-gateway
+  #    namespace: gateway-system
+  #    sectionName: https
+  # -- Hostnames. The first also derives `baseUrl` when that and the ingress
+  # are unset; it is assumed to be served over https.
+  hostnames: []
+  # -- Path matches.
+  matches:
+    - path:
+        type: PathPrefix
+        value: /
+
+networkPolicy:
+  # -- Create a NetworkPolicy for the VibeXP pod (ingress only; egress stays
+  # open — the app calls LLM, mail and identity providers on the internet).
+  enabled: false
+  # -- Peers allowed to reach the HTTP port (empty = any).
+  ingressFrom: []
+
+# Text embeddings for semantic search: Hugging Face text-embeddings-inference.
+#
+# VibeXP calls an embedding provider configured PER TEAM in the app (Settings →
+# Embedding Providers); this only runs the server. Enter
+# `http://<embeddings service>:80` there (see the install notes). Models must
+# output 1024-dimensional vectors. Without a provider, search falls back to
+# keyword matching.
+embeddings:
+  # -- Run TEI in the cluster (or point a Service at an external one, below).
+  enabled: false
+  # -- Service name. Defaults to `<fullname>-embeddings`. The provider URL
+  # entered in the app names it, so keep it stable.
+  nameOverride: ""
+  # -- Instead of deploying TEI, create an ExternalName Service pointing at
+  # this DNS name (an embeddings server running elsewhere).
+  externalName: ""
+  image:
+    # -- TEI image registry.
+    registry: ghcr.io
+    # -- TEI image repository.
+    repository: huggingface/text-embeddings-inference
+    # -- TEI image tag (`cpu-*`, or a GPU variant such as `1.9` / `89-1.9`).
+    tag: cpu-1.9
+    # -- TEI image digest.
+    digest: ""
+    # -- Pull policy.
+    pullPolicy: IfNotPresent
+  # -- Model to serve. Must produce 1024-dimensional embeddings.
+  model: mixedbread-ai/mxbai-embed-large-v1
+  # -- Model revision (empty for the default branch).
+  revision: ""
+  # -- Extra TEI arguments.
+  extraArgs:
+    - --auto-truncate
+    - --max-client-batch-size
+    - "64"
+  # -- Secret with a Hugging Face token for gated/private models.
+  huggingfaceToken:
+    existingSecret: ""
+    key: HF_TOKEN
+  service:
+    # -- Service port.
+    port: 80
+    # -- Fixed ClusterIP. Set it to a free address in your Service CIDR and the
+    # chart adds `<ip>/32` to `config.outboundAllowedCidrs`, which the app's
+    # SSRF guard needs in order to reach TEI. Otherwise allowlist the Service
+    # CIDR yourself.
+    clusterIP: ""
+    # -- Service annotations.
+    annotations: {}
+  # Model cache (`/data`), so a restart does not download the model again.
+  persistence:
+    # -- Persist the model cache.
+    enabled: true
+    # -- Existing PVC.
+    existingClaim: ""
+    # -- Storage class.
+    storageClass: ""
+    # -- Access modes.
+    accessModes:
+      - ReadWriteOnce
+    # -- Size.
+    size: 5Gi
+    # -- PVC annotations.
+    annotations: {}
+  # -- Resources. The default model needs ~2.5 GiB of memory on CPU.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+  # -- Pod security context.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  # -- Container security context.
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+  # -- Startup probe (allows ~10 minutes to download and load the model).
+  startupProbe:
+    httpGet:
+      path: /health
+      port: http
+    periodSeconds: 10
+    failureThreshold: 60
+  # -- Liveness probe.
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    periodSeconds: 30
+    timeoutSeconds: 5
+  # -- Readiness probe.
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    periodSeconds: 10
+    timeoutSeconds: 5
+  # -- Pod labels.
+  podLabels: {}
+  # -- Pod annotations.
+  podAnnotations: {}
+  # -- Extra environment variables.
+  extraEnv: []
+  # -- Node selector.
+  nodeSelector: {}
+  # -- Tolerations.
+  tolerations: []
+  # -- Affinity.
+  affinity: {}
+  # -- Priority class.
+  priorityClassName: ""
+
+# The database. VibeXP needs PostgreSQL with the pgvector extension.
+#
+# `postgresql.enabled` runs a single PostgreSQL pod — convenient for evaluation
+# and small installs, but it has no backups, replication or upgrades. For
+# production use a managed or operator-run database (`externalDatabase`).
+postgresql:
+  # -- Run a bundled PostgreSQL + pgvector.
+  enabled: false
+  image:
+    # -- Image registry.
+    registry: docker.io
+    # -- Image repository.
+    repository: pgvector/pgvector
+    # -- Image tag.
+    tag: 0.8.1-pg17
+    # -- Image digest.
+    digest: ""
+    # -- Pull policy.
+    pullPolicy: IfNotPresent
+  auth:
+    # -- Database name.
+    database: vibexp
+    # -- Database user (a superuser of the bundled server).
+    username: vibexp
+    # -- Password. Generated when empty.
+    password: ""
+    # -- Existing Secret with the password.
+    existingSecret: ""
+    # -- Key of the password in `existingSecret`.
+    secretKey: password
+  persistence:
+    # -- Persist the data directory.
+    enabled: true
+    # -- Existing PVC.
+    existingClaim: ""
+    # -- Storage class.
+    storageClass: ""
+    # -- Access modes.
+    accessModes:
+      - ReadWriteOnce
+    # -- Size.
+    size: 8Gi
+    # -- PVC annotations.
+    annotations: {}
+  # -- Resources.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  # -- Pod security context (the image's `postgres` user is 999).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  # -- Container security context.
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  # -- Pod labels.
+  podLabels: {}
+  # -- Pod annotations.
+  podAnnotations: {}
+  # -- Node selector.
+  nodeSelector: {}
+  # -- Tolerations.
+  tolerations: []
+  # -- Affinity.
+  affinity: {}
+
+# An existing PostgreSQL (used when `postgresql.enabled` is false). The first migration runs `CREATE EXTENSION IF NOT EXISTS` for
+# `vector` and `uuid-ossp`: install pgvector on the server, and either let the
+# app's user create extensions or create both beforehand as a superuser.
+externalDatabase:
+  # -- Host.
+  host: ""
+  # -- Port.
+  port: 5432
+  # -- Database name. Leave empty to supply `DB_NAME` from `secrets.existingSecret`.
+  database: vibexp
+  # -- User. Leave empty to supply `DB_USER` from `secrets.existingSecret`.
+  username: vibexp
+  # -- Password (stored in the chart's Secret). Prefer `existingSecret`.
+  password: ""
+  # -- Existing Secret with the password. When neither this nor `password` is
+  # set, `DB_PASSWORD` must be in `secrets.existingSecret`.
+  existingSecret: ""
+  # -- Key of the password in `existingSecret`.
+  secretKey: DB_PASSWORD
+  # -- `sslmode` (disable, require, verify-ca, verify-full).
+  sslmode: require
+
+# -- Extra manifests deployed with the release (list of objects or strings,
+# rendered with `tpl`).
+extraObjects: []
+
+tests:
+  # -- Image of the `helm test` pod.
+  image:
+    registry: docker.io
+    repository: busybox
+    tag: "1.37"
+    digest: ""
